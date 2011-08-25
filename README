@@ -1,0 +1,52 @@
+asmscan
+Author: Eugene Ma
+
+==========[ 0x0 Introduction ]
+
+        asmscan is a port scanner written entirely in 32-bit x86 assembly, with
+both TCP and SYN scanning capabilities. It uses Linux system calls only to
+interface with the network stack. This makes the code unportable across
+platforms, but keeps it completely libc free.
+
+==========[ 0x1 Features ]
+
+- libc free
+- compact binary size
+- network bound speed 
+
+==========[ 0x2 Installation ]
+
+You will need nasm.
+
+$ cat Makefile 
+asmscan: asmscan.o
+        ld -o asmscan asmscan.o
+asmscan.o: asmscan.asm
+        nasm -g -f elf -o asmscan.o asmscan.asm
+
+==========[ 0x3 Usage ]
+
+$ ./asmscan
+Usage: asmscan <target ip>
+
+==========[ 0x4 Operation ]
+
+asmscan implements two modes of operation. 
+
+1. In non-root user mode, asmscan will perform what is known as a TCP scan,
+connecting to every single port it can.
+
+2. In root user mode, asmscan will perform what is known as a SYN scan, sending
+packets with custom crafted headers to the target host. We do an ICMP ping
+first to calclate the shortest time we should wait for replies from the host.
+
+In both modes, asmscan scans ports in parallel instead of serially. This gives
+it speeds that are comparable to those of nmap.
+
+==========[ 0x5 Todo ]
+
+- Allow user to specify a range of ports
+- Allow user to specify a range of IP's
+- Greater granularity of port state: notify the user if a port is open, closed,
+  filtered, or possibly something else.
+- Make the binary even smaller
