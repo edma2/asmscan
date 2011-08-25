@@ -144,6 +144,7 @@ check_root:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+tcp_scan:
 xor ebx, ebx 
 tcp_scan_loop: 
         xor esi, esi 
@@ -384,7 +385,9 @@ ping_host:
                 call free_socket
                 add esp, 4
                 mov [tv_master + 4], dword max_timeout
-                jmp ping_host_cleanup
+                ; Give up on SYN scanning, because we have no other way of
+                ; getting the IP address for now.
+                jmp tcp_scan
         ; Calculate timeout and receive packet data
         ping_host_replied:
                 ; Calculate the packet delay from max_timeout - remaining time
