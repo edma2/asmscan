@@ -384,7 +384,6 @@ ping_host:
                 push dword [socketarray]
                 call free_socket
                 add esp, 4
-                mov [tv_master + 4], dword max_timeout
                 ; Give up on SYN scanning, because we have no other way of
                 ; getting the IP address for now.
                 jmp tcp_scan
