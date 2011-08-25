@@ -145,133 +145,139 @@ check_root:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 tcp_scan:
-xor ebx, ebx 
-tcp_scan_loop: 
-        xor esi, esi 
-        xor edi, edi 
-        ; ebx stores port counter 
-        ; esi stores array index 
-        ; edi stores highest numbered socket descriptor 
-        tcp_scan_connect_loop:
-                ; socket(PF_INET, (SOCK_STREAM | O_NONBLOCK), IPPROTO_TCP)
-                tcp_scan_create_socket:
-                        push dword 6 
-                        push dword (1 | 4000q) 
-                        call spawn_socket
-                        add esp, 8
-                ; Return value should be a socket descriptor
-                test eax, eax
-                jns tcp_scan_store_socket
-                ; Otherwise, print socket error message and exit with errno
-                push eax 
-                push socket_error_msg
-                call premature_exit
-                ; Save socket to array and map it to the port 
-                tcp_scan_store_socket:
-                        mov [socketarray + 4 * esi], eax 
-                        mov [portarray + 2 * esi], word bx 
-                        ; Update highest numbered file descriptor
-                        cmp eax, edi
-                        cmovg edi, eax
-                ; Load sockaddr with port in network byte order 
-                tcp_scan_connect:
-                        mov [sockaddr + 2], byte bh 
-                        mov [sockaddr + 3], byte bl 
-                        push sockaddrlen
-                        push sockaddr        
+        xor ebx, ebx 
+        tcp_scan_loop: 
+                xor esi, esi 
+                xor edi, edi 
+                ; ebx stores port counter 
+                ; esi stores array index 
+                ; edi stores highest numbered socket descriptor 
+                tcp_scan_connect_loop:
+                        ; socket(PF_INET, (SOCK_STREAM | O_NONBLOCK),
+                        ; IPPROTO_TCP)
+                        tcp_scan_create_socket:
+                                push dword 6 
+                                push dword (1 | 4000q) 
+                                call spawn_socket
+                                add esp, 8
+                        ; Return value should be a socket descriptor
+                        test eax, eax
+                        jns tcp_scan_store_socket
+                        ; Otherwise, print socket error message and exit with
+                        ; errno
                         push eax 
-                        call sys_connect
-                        add esp, 12
-                ; The errno should indicate connection in progress 
-                cmp eax, EINPROGRESS
-                je tcp_scan_connect_loop_next
-                cmp eax, EAGAIN
-                je tcp_scan_connect_loop_next
-                test eax, eax
-                jns tcp_scan_connect_loop_next
-                ; Otherwise, print connect error message and exit with errno
-                push eax 
-                push connect_error_msg
+                        push socket_error_msg
+                        call premature_exit
+                        ; Save socket to array and map it to the port 
+                        tcp_scan_store_socket:
+                                mov [socketarray + 4 * esi], eax 
+                                mov [portarray + 2 * esi], word bx 
+                                ; Update highest numbered file descriptor
+                                cmp eax, edi
+                                cmovg edi, eax
+                        ; Load sockaddr with port in network byte order 
+                        tcp_scan_connect:
+                                mov [sockaddr + 2], byte bh 
+                                mov [sockaddr + 3], byte bl 
+                                push sockaddrlen
+                                push sockaddr        
+                                push eax 
+                                call sys_connect
+                                add esp, 12
+                        ; The errno should indicate connection in progress 
+                        cmp eax, EINPROGRESS
+                        je tcp_scan_connect_loop_next
+                        cmp eax, EAGAIN
+                        je tcp_scan_connect_loop_next
+                        test eax, eax
+                        jns tcp_scan_connect_loop_next
+                        ; Otherwise, print connect error message and exit with
+                        ; errno
+                        push eax 
+                        push connect_error_msg
+                        call premature_exit
+                ; Increment array index and port 
+                tcp_scan_connect_loop_next:
+                inc word bx
+                inc esi
+                cmp esi, max_parallel_sockets
+                jl tcp_scan_connect_loop
+                ; Wait for requested connects to finish or timeout
+                tcp_scan_sleep:
+                        ; Copy default timeout to tv_volatile
+                        mov [tv_volatile + 4], dword 500000
+                        push tv_volatile
+                        push dword 0
+                        push dword 0
+                        push dword 0
+                        push dword 0
+                        call sys_select
+                        add esp, 20
+                ; Monitor sockets with select
+                tcp_scan_select:
+                        ; Update wrfds with socket descriptors of living
+                        ; sockets
+                        mov esi, masterfds
+                        mov edi, wrfds
+                        mov ecx, masterfdslen
+                        rep movsd
+                        push tv_zero
+                        push dword 0
+                        push dword wrfds
+                        push dword 0
+                        ; Highest numbered file descriptor + 1
+                        inc edi 
+                        push edi
+                        call sys_select
+                        add esp, 20
+                ; Reset array index
+                xor esi, esi
+                ; Select returns the number of bits set in wrfds
+                cmp eax, 0
+                je tcp_scan_cleanup
+                jns tcp_scan_write_loop 
+                ; Otherwise, print select error message and exit with errno
+                push eax
+                push select_error_msg
                 call premature_exit
-        ; Increment array index and port 
-        tcp_scan_connect_loop_next:
-        inc word bx
-        inc esi
-        cmp esi, max_parallel_sockets
-        jl tcp_scan_connect_loop
-        ; Wait for requested connects to finish or timeout
-        tcp_scan_sleep:
-                ; Copy default timeout to tv_volatile
-                mov [tv_volatile + 4], dword 500000
-                push tv_volatile
-                push dword 0
-                push dword 0
-                push dword 0
-                push dword 0
-                call sys_select
-                add esp, 20
-        ; Monitor sockets with select
-        tcp_scan_select:
-                ; Update wrfds with socket descriptors of living sockets
-                mov esi, masterfds
-                mov edi, wrfds
-                mov ecx, masterfdslen
-                rep movsd
-                push tv_zero
-                push dword 0
-                push dword wrfds
-                push dword 0
-                ; Highest numbered file descriptor + 1
-                inc edi 
-                push edi
-                call sys_select
-                add esp, 20
-        ; Reset array index
-        xor esi, esi
-        ; Select returns the number of bits set in wrfds
-        cmp eax, 0
-        je tcp_scan_cleanup
-        jns tcp_scan_write_loop 
-        ; Otherwise, print select error message and exit with errno
-        push eax
-        push select_error_msg
-        call premature_exit
-        ; Traverse array and write to sockets set in wrfds 
-        tcp_scan_write_loop:
-                ; If the bit mapped to the socket is cleared, the socket is not
-                ; ready for writing and the state of our TCP connection is
-                ; unknown.  This exposes a possible filtered port that dropped
-                ; our TCP connect request.
-                mov eax, [socketarray + 4 * esi]
-                bt [wrfds], eax
-                jnc tcp_scan_port_filtered 
-                ; Otherwise, try writing 0 bytes to the socket
-                tcp_scan_write:
-                        push dword 0
-                        push dword 0
-                        push eax
-                        call sys_write
-                        add esp, 12 
-                ; Write should return number of bytes written, or -errno
-                test eax, eax
-                js tcp_scan_port_closed
-                ; The write succeeded, implying the TCP connection is active
-                tcpt_scan_port_open:
-                        ; Convert the port number to a printable string
-                        push port_open_fmtstr
-                        movzx eax, word [portarray + 2 * esi]
-                        push eax
-                        call print_port
-                        add esp, 4
-        ; Try next port
-        tcp_scan_port_filtered:
-        tcp_scan_port_closed:
-        inc esi
-        cmp esi, max_parallel_sockets
-        jl tcp_scan_write_loop
+                ; Traverse array and write to sockets set in wrfds 
+                tcp_scan_write_loop:
+                        ; If the bit mapped to the socket is cleared, the
+                        ; socket is not ready for writing and the state of our
+                        ; TCP connection is unknown. This exposes a possible
+                        ; filtered port that dropped our TCP connect request.
+                        mov eax, [socketarray + 4 * esi]
+                        bt [wrfds], eax
+                        jnc tcp_scan_port_filtered 
+                        ; Otherwise, try writing 0 bytes to the socket
+                        tcp_scan_write:
+                                push dword 0
+                                push dword 0
+                                push eax
+                                call sys_write
+                                add esp, 12 
+                        ; Write should return number of bytes written, or
+                        ; -errno
+                        test eax, eax
+                        js tcp_scan_port_closed
+                        ; The write succeeded, implying the TCP connection is
+                        ; active
+                        tcpt_scan_port_open:
+                                ; Convert the port number to a printable string
+                                push port_open_fmtstr
+                                movzx eax, word [portarray + 2 * esi]
+                                push eax
+                                call print_port
+                                add esp, 4
+                ; Try next port
+                tcp_scan_port_filtered:
+                tcp_scan_port_closed:
+                inc esi
+                cmp esi, max_parallel_sockets
+                jl tcp_scan_write_loop
 
-; Clean up socket descriptors
-tcp_scan_cleanup:
+        ; Clean up socket descriptors
+        tcp_scan_cleanup:
         call destroy_sockets
         ; Check if we scanned the last port
         cmp bx, word 1024 
@@ -379,7 +385,7 @@ ping_host:
         push eax
         push dword select_error_msg
         call premature_exit
-        ; Victim didn't respond to our ping, so use the default timeout
+        ; Victim didn't respond to our ping
         ping_host_no_reply:
                 push dword [socketarray]
                 call free_socket
