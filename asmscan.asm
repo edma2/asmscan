@@ -186,18 +186,18 @@ tcp_scan:
                                 add esp, 12
                         ; The errno should indicate connection in progress 
                         cmp eax, EINPROGRESS
-                        je tcp_scan_connect_loop_next
+                        je tcp_scan_connect_next
                         cmp eax, EAGAIN
-                        je tcp_scan_connect_loop_next
+                        je tcp_scan_connect_next
                         test eax, eax
-                        jns tcp_scan_connect_loop_next
+                        jns tcp_scan_connect_next
                         ; Otherwise, print connect error message and exit with
                         ; errno
                         push eax 
                         push connect_error_msg
                         call premature_exit
                 ; Increment array index and port 
-                tcp_scan_connect_loop_next:
+                tcp_scan_connect_next:
                 inc word bx
                 inc esi
                 cmp esi, max_parallel_sockets
@@ -234,7 +234,7 @@ tcp_scan:
                 xor esi, esi
                 ; Select returns the number of bits set in wrfds
                 cmp eax, 0
-                je tcp_scan_cleanup
+                je tcp_scan_next_batch
                 jns tcp_scan_write_loop 
                 ; Otherwise, print select error message and exit with errno
                 push eax
@@ -275,9 +275,9 @@ tcp_scan:
                 inc esi
                 cmp esi, max_parallel_sockets
                 jl tcp_scan_write_loop
-
+        ; Scan the next batch of ports, or exit
+        tcp_scan_next_batch:
         ; Clean up socket descriptors
-        tcp_scan_cleanup:
         call destroy_sockets
         ; Check if we scanned the last port
         cmp bx, word 1024 
