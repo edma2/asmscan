@@ -298,7 +298,7 @@ tcp_scan:
                 cmp esi, max_parallel_sockets
                 jl tcp_scan_write_loop
 
-        tcp_scan_next_batch:
+tcp_scan_next_batch:
         ; Clean up socket descriptors
         call destroy_sockets
         ; Scan the next batch of ports, or exit
