@@ -43,6 +43,7 @@ section .bss
         sockaddr:               resb (2+2+4+8)
         sockaddrlen             equ $-sockaddr
         sockaddrlen_addr:       resd 1
+
         ; The bitmap used to track living sockets and as select argument
         ; typedef struct {
         ;       unsigned long fds_bits [__FDSET_LONGS];
@@ -51,17 +52,21 @@ section .bss
         masterfdslen            equ 32                       
         wrfds:                  resd 32                
         rdfds:                  resd 32                 
+
         ; Maximum number of sockets to open in parallel 
         max_parallel_sockets    equ 64
         ; For storing socket descriptors we we care about
         socketarray:            resd max_parallel_sockets        
         ; Used in conjunction with socketarray to map socket to port
         portarray:              resw max_parallel_sockets        
+
         ; The source and target IPv4 addresses in network byte order
         victimaddr:             resd 1                  
         myaddr:                 resd 1                 
+
         ; Temporary storage for strings
         writebuf:               resb 256                 
+
         ; Maximum time to wait for incoming packets in usec
         max_timeout             equ 500000      
         ; struct timeval {
@@ -74,13 +79,16 @@ section .bss
         tv_zero:                resd 2                  
         ; This is the delay between sending packets
         tv_master:              resd 2
+
         ; The global buffers we use to send and recieve datagrams
         sendbuf:                resb 1024               
         recvbuf:                resb 1024             
         sendbuflen:             resd 1                 
         recvbuflen:             resd 1               
+
         ; To store the file descriptor mapped to /dev/urandom
         devrfd:                 resd 1
+
         ; Useful miscellaneous constants 
         iphdrlen                equ 20                  
         icmphdrlen              equ 8                  
