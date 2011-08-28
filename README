@@ -18,11 +18,12 @@ keeps it completely libc free.
 
 You will need nasm.
 
+
 $ cat Makefile 
 asmscan: asmscan.o
-        ld -o asmscan asmscan.o
+	ld -o asmscan asmscan.o
 asmscan.o: asmscan.asm
-        nasm -g -f elf -o asmscan.o asmscan.asm
+	nasm -f elf -o asmscan.o asmscan.asm
 
 ==========[ 0x3 Usage ]
 
