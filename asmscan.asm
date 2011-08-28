@@ -42,23 +42,23 @@ section .bss
         ; };
         sockaddr:               resb (2+2+4+8)
         sockaddrlen             equ $-sockaddr
-        sockaddrlen_addr:       resd 1
+        sockaddrlenbuf:         resd 1
 
         ; The bitmap used to track living sockets and as select argument
         ; typedef struct {
         ;       unsigned long fds_bits [__FDSET_LONGS];
         ; } __kernel_fd_set;
         masterfds:              resd 32
-        masterfdslen            equ 32                       
         wrfds:                  resd 32                
         rdfds:                  resd 32                 
+        masterfdslen            equ 32                       
 
-        ; Maximum number of sockets to open in parallel 
-        max_parallel_sockets    equ 64
+        ; Number of ports to scan in parallel 
+        max_parallel_ports      equ 64
         ; For storing socket descriptors we we care about
-        socketarray:            resd max_parallel_sockets        
+        socketarray:            resd max_parallel_ports        
         ; Used in conjunction with socketarray to map socket to port
-        portarray:              resw max_parallel_sockets        
+        portarray:              resw max_parallel_ports        
 
         ; The source and target IPv4 addresses in network byte order
         victimaddr:             resd 1                  
@@ -94,7 +94,7 @@ section .bss
         icmphdrlen              equ 8                  
         EINPROGRESS             equ -115
         EAGAIN                  equ -11
-        TH_SYN                  equ 0x2 
+        SYN_FLAG                equ 0x2 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -131,7 +131,7 @@ parse_argv:
 
         ; Parse returns zero on success
         jns load_sockaddr           
-        ; Complain about malformed ip and exit with exit code 1
+        ; Otherwise, complain about malformed IP and exit with exit code 1
         push dword -1
         push dword parse_error_msg            
         call premature_exit                  
@@ -146,8 +146,8 @@ load_sockaddr:
         stosw
         mov eax, [victimaddr]
         stosd
-        ; Store the address length in a buffer as well
-        mov [sockaddrlen_addr], dword sockaddrlen
+        ; Store the length of this struct in a buffer 
+        mov [sockaddrlenbuf], dword sockaddrlen
 
 check_root:
         ; Root user has uid = 0
@@ -158,15 +158,15 @@ check_root:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 tcp_scan:
-        ; ebx stores port counter 
+        ; Store the current port in ebx 
         xor ebx, ebx 
         tcp_scan_loop: 
-                ; esi stores array index 
-                ; edi stores highest numbered socket descriptor 
+                ; Store the index into socketarray and portarray in esi
+                ; Store the highest numbered socket descriptor in edi
                 xor esi, esi 
                 xor edi, edi 
                 tcp_scan_connect_loop:
-                        ; Create non-blocking stream socket
+                        ; Create a non-blocking stream socket
                         ; (PF_INET, (SOCK_STREAM | O_NONBLOCK), IPPROTO_TCP)
                         push dword 6 
                         push dword (1 | 4000q) 
@@ -176,7 +176,7 @@ tcp_scan:
                         ; Check return value
                         test eax, eax
 
-                        ; Return value should be a socket descriptor
+                        ; Return value should be a valid socket descriptor
                         jns tcp_scan_store_socket
                         ; Else, print socket error message and exit with errno
                         push eax 
@@ -184,10 +184,11 @@ tcp_scan:
                         call premature_exit
 
                         tcp_scan_store_socket:
-                        ; Save socket to array and map it to the port 
+                        ; Save the socket descriptor in an array 
                         mov [socketarray + 4 * esi], eax 
+                        ; Map the socket descriptor to the port
                         mov [portarray + 2 * esi], word bx 
-                        ; Update highest numbered file descriptor
+                        ; Update highest numbered socket descriptor
                         cmp eax, edi
                         cmovg edi, eax
 
@@ -202,7 +203,7 @@ tcp_scan:
                         call sys_connect
                         add esp, 12
 
-                        ; The errno should indicate connection in progress 
+                        ; The errno should indicate the connection is pending
                         cmp eax, EINPROGRESS
                         je tcp_scan_connect_next
                         cmp eax, EAGAIN
@@ -215,13 +216,14 @@ tcp_scan:
                         call premature_exit
 
                 tcp_scan_connect_next:
-                ; Increment array index and port 
+                ; Increment and port 
                 inc word bx
+                ; Increment array index
                 inc esi
-                cmp esi, max_parallel_sockets
+                cmp esi, max_parallel_ports
                 jl tcp_scan_connect_loop
 
-                ; Wait for requested connects to finish or timeout
+                ; Wait 500 ms for requested connects to finish or timeout
                 mov [tv_volatile + 4], dword 500000
                 push tv_volatile
                 push dword 0
@@ -231,7 +233,7 @@ tcp_scan:
                 call sys_select
                 add esp, 20
 
-                ; Update wrfds with socket descriptors of living sockets
+                ; Copy master fds to wrfds 
                 mov esi, masterfds
                 mov edi, wrfds
                 mov ecx, masterfdslen
@@ -242,12 +244,12 @@ tcp_scan:
                 push dword 0
                 push dword wrfds
                 push dword 0
-                ; Highest numbered file descriptor + 1
+                ; Select takes highest numbered file descriptor + 1
                 inc edi 
                 push edi
                 call sys_select
                 add esp, 20
-                ; Reset array index
+                ; Reset index into socketarray and portarray
                 xor esi, esi
 
                 ; Check return value
@@ -262,17 +264,18 @@ tcp_scan:
                 call premature_exit
         
                 tcp_scan_write_loop:
-                        ; Traverse array and write to sockets set in wrfds 
+                        ; Traverse array and write to sockets set in wrfds
                         mov eax, [socketarray + 4 * esi]
-                        ; Test bit mapped to this socket 
+                        ; Test the bit mapped to this socket 
                         bt [wrfds], eax
-                        ; If the bit mapped to the socket is cleared, the
-                        ; socket is not ready for writing and the state of our
-                        ; TCP connection is unknown. This exposes a possible
-                        ; filtered port that dropped our TCP connect request.
+                        ; If the bit is cleared, the socket is not ready for
+                        ; writing and the state of the TCP connection is
+                        ; unknown. This possibly exposes a filtered port which
+                        ; drops TCP "three-way handshake" packets.
                         jnc tcp_scan_port_filtered 
 
-                        ; Otherwise, try writing 0 bytes to the socket
+                        ; If the bit is set, the socket is ready for writing;
+                        ; try a 0 byte write to the socket
                         push dword 0
                         push dword 0
                         push eax
@@ -281,10 +284,10 @@ tcp_scan:
 
                         ; Check return value 
                         test eax, eax
-                        ; Errno was returned in eax
+                        ; If return value is negative, then the write failed
                         js tcp_scan_port_closed
 
-                        ; Write succeeded; print open port
+                        ; The write succeeded, so print the open port
                         push port_open_fmtstr
                         movzx eax, word [portarray + 2 * esi]
                         push eax
@@ -293,17 +296,19 @@ tcp_scan:
 
                 tcp_scan_port_filtered:
                 tcp_scan_port_closed:
-                ; Try next port
+                ; Try next socket
                 inc esi
-                cmp esi, max_parallel_sockets
+                cmp esi, max_parallel_ports
                 jl tcp_scan_write_loop
 
-tcp_scan_next_batch:
-        ; Clean up socket descriptors
-        call destroy_sockets
+        tcp_scan_next_batch:
+        ; Close all open socket descriptors
+        call cleanup_sockets
         ; Scan the next batch of ports, or exit
         cmp bx, word 1024 
         jl tcp_scan_loop
+
+tcp_scan_done:
         jmp exit
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -339,7 +344,7 @@ ping:
         ; Code: 0 (Cleared for this type)
         xor al, al                      
         stosb                          
-        ; Calculate ICMP checksum later
+        ; Calculate the ICMP checksum later
         xor eax, eax                    
         stosw                         
         ; Identifier: 0, Sequence number: 0
@@ -348,7 +353,7 @@ ping:
         xor eax, eax                    
         mov ecx, 14                    
         rep stosd                       
-        ; Calculate ICMP checksum which includes ICMP header and data
+        ; Calculate the ICMP checksum which includes ICMP header and data
         push dword ((icmphdrlen+56)/2)
         push dword sendbuf        
         call cksum                     
@@ -358,6 +363,7 @@ ping:
         ; Store the length of the packet we wish to send
         mov [sendbuflen], dword (icmphdrlen + 56)
 
+        ; Count down the number of packets sent in ebx
         mov ebx, 3                             
         ping_send_packets:
                 ; The socket is in non-blocking mode, so sending and receiving data
@@ -374,14 +380,13 @@ ping:
                 je ping_send_next_packet
                 test eax, eax
                 jns ping_send_next_packet
-
                 ; Otherwise, print sendto error message and exit with errno
                 push eax
                 push sendto_error_msg
                 call premature_exit
 
         ping_send_next_packet:
-        ; Send another until we sent 3 packets
+        ; Send another packet?
         dec ebx
         jnz ping_send_packets
 
@@ -399,7 +404,7 @@ ping:
         mov ecx, masterfdslen
         rep movsd
 
-        ; Block until data is ready to be read, or timeout exceeded 
+        ; Block until data is ready to be read, or timeout is exceeded 
         push tv_volatile       
         push dword 0                    
         push dword 0                   
@@ -424,9 +429,7 @@ ping:
         ;;; Victim didn't respond to our ping ;;;
 
         ; Free the socket we used
-        push dword [socketarray]
-        call free_socket
-        add esp, 4
+        call cleanup_sockets
         ; Give up on SYN scanning, because we have no other way of
         ; getting the IP address for now.
         jmp tcp_scan
@@ -436,7 +439,7 @@ ping:
         mov eax, max_timeout
         mov ecx, [tv_volatile + 4]
         sub eax, ecx
-        ; RTT * 2 
+        ; Set delay to RTT * 2 
         shl eax, 1
         mov [tv_master + 4], eax   
 
@@ -484,11 +487,8 @@ ping:
         call printstr
         add esp, 4
 
-; Close socket descriptor
-ping_cleanup:
-        push dword [socketarray]
-        call free_socket
-        add esp, 4
+        ; All done - close socket 
+        call cleanup_sockets
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -535,14 +535,14 @@ syn_scan:
         ; Save the returned file descriptor
         mov [devrfd], eax
 
-        ; ebx = 0; ebx < high_port; ebx++
+        ; Store the current port in ebx
         xor ebx, ebx
         syn_scan_loop:
-                ; esi = 0; esi < maximum_parallel_ports; esi++
-                xor esi, esi
+                ; Count down the number of packets sent in esi
+                mov esi, max_parallel_ports
                 syn_scan_send_syn_loop:
-                        ; Send a TCP packet with the SYN flag on
-                        push dword TH_SYN
+                        ; Send a TCP packet with the SYN flag set
+                        push dword SYN_FLAG
                         push dword ebx
                         push dword [socketarray]
                         call send_tcp_raw
@@ -559,12 +559,11 @@ syn_scan:
                         call premature_exit
 
                 syn_scan_send_next:
-                ; Increment counters and send another packet
-                inc esi
+                ; Increment current port
                 inc ebx
-                cmp esi, max_parallel_sockets
-                jl syn_scan_send_syn_loop
-
+                ; Check if we should do another port
+                dec esi
+                jnz syn_scan_send_syn_loop
 
                 ; Copy tv_master to tv_volatile
                 lea esi, [tv_master + 4]
@@ -586,7 +585,7 @@ syn_scan:
                 mov ecx, masterfdslen
                 rep movsd
 
-                ; Monitor socket
+                ; Monitor sockets with select
                 push tv_zero
                 push dword 0
                 push dword 0
@@ -620,16 +619,15 @@ syn_scan:
                         test eax, eax
 
                         ; If signed, then we were unable to read any more data
-                        js syn_scan_next_batch
                         ; Otherwise, recvfrom returns the number of bytes received
+                        js syn_scan_next_batch
 
-                        ; Get IP header length located in last 4 bits
-                        ; of first byte
+                        ; IP header length located in last 4 bits of first byte
                         movzx eax, byte [recvbuf]
                         and eax, 0xf
                         ; Convert from words to bytes
                         shl eax, 2
-                        ; Store the address of TCP header start in edi
+                        ; Store the address of start of TCP header in edi
                         mov edi, eax
                         ; Point to flags field
                         add eax, 13
@@ -648,24 +646,25 @@ syn_scan:
                         ; Extract the port from the TCP header
                         movzx eax, word [recvbuf + edi]
                         xchg al, ah
+                        ; Print the open port
                         push eax
                         call print_port
                         add esp, 8
 
-                ; Keep receiving packets until we're unable to
+                ; Keep receiving packets until recvfrom fails
                 jmp syn_scan_recv_reply_loop
 
         syn_scan_next_batch:
-        ; Everything seems normal, scan the next batch of ports
+        ; Scan the next batch of ports, or clean up
         cmp ebx, 1024
         jl syn_scan_loop
 
-syn_scan_cleanup:
+syn_scan_done:
         ; Clean up file descriptors and exit
         push dword [devrfd]
         call sys_close
         add esp, 4
-        call destroy_sockets
+        call cleanup_sockets
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -720,6 +719,7 @@ send_tcp_raw:
         stosw
         ; Urgent pointer = 0 (not used)
         stosw
+
         ; Prepare TCP pseudo-header
         ; struct pseudo_hdr {
         ;       u_int32_t src;          /* 32bit source ip address*/
@@ -744,15 +744,18 @@ send_tcp_raw:
         mov ax, 20
         xchg al, ah
         stosw
+
         ; Calculate TCP header and pseudo-header checksum
         push dword (20+12)
         push sendbuf
         call cksum
         add esp, 8
+
         ; Store checksum in TCP header
         mov [sendbuf + 16], ax
         ; Set the length in bytes to send
         mov [sendbuflen], dword 20
+
         ; Send the SYN packet
         push dword [ebp + 8]
         call send_packet
@@ -1063,30 +1066,11 @@ spawn_socket:
 ; ------------------------------------------------------------------------------
 
 ; ------------------------------------------------------------------------------
-; free_socket:
-;       Close a socket and remove it from masterfds
-;               Expects: socket 
-;               Returns: nothing
-free_socket:
-        push ebp
-        mov ebp, esp
-
-        push dword [ebp + 8]
-        call sys_close
-        add esp, 4
-        btr [masterfds], eax
-
-        mov esp, ebp
-        pop ebp
-        ret
-; ------------------------------------------------------------------------------
-
-; ------------------------------------------------------------------------------
-; destroy_sockets:
+; cleanup_sockets:
 ;       Close all living sockets 
 ;               Expects: nothing
 ;               Returns: nothing
-destroy_sockets:
+cleanup_sockets:
         push ebp
         mov ebp, esp
 
@@ -1095,14 +1079,14 @@ destroy_sockets:
         mov eax, 1023
         lea ecx, [masterfds + masterfdslen]
         ; Find dword containing highest numbered file descriptor
-        find_highest_socket_descriptor:
+        find_highest_loop:
                 cmp [ecx], dword 0
-                jnz destroy_sockets_loop
+                jnz cleanup_sockets_loop
                 sub eax, 32
                 sub ecx, 4
-                jmp find_highest_socket_descriptor
+                jmp find_highest_loop
         ; Loop through remaining bits in fdset
-        destroy_sockets_loop:
+        cleanup_sockets_loop:
                 ; Clear bit to zero and store original bit in CF
                 btr [masterfds], eax
                 ; If bit was set, close the mapped socket
@@ -1116,7 +1100,7 @@ destroy_sockets:
         ; Keep looking for sockets to free until counter is negative
         free_next_socket:
         dec eax
-        jns destroy_sockets_loop
+        jns cleanup_sockets_loop
 
         mov esp, ebp
         pop ebp
@@ -1144,7 +1128,7 @@ premature_exit:
         add esp, 4
         ; Free all open sockets (raw, icmp, tcp, etc...)
         premature_exit_close_sockets:
-        call destroy_sockets
+        call cleanup_sockets
         ; Convert -errno to errno
         mov ebx, [ebp + 12]
         not ebx
@@ -1416,7 +1400,7 @@ recv_packet:
         push ebp
         mov ebp, esp
         
-        push dword sockaddrlen_addr     
+        push dword sockaddrlenbuf     
         push dword sockaddr        
         push dword 0                
         push dword [recvbuflen]      
