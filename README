@@ -38,7 +38,7 @@ and attempt to connect with ports 0-1023.
 
 2. If run with root permissions, asmscan will perform what is known as a SYN
 scan, sending custom crafted TCP SYN packets to the target host and listening
-for replies.  It first sends an ICMP ping to calculate the shortest time to
+for replies. It first sends an ICMP ping to calculate the shortest time to
 wait for replies from the host.
 
 In both modes, asmscan scans ports in parallel instead of serially. This gives
