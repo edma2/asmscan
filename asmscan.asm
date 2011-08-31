@@ -55,7 +55,7 @@ section .bss
 
         ; Number of ports to scan in parallel 
         max_parallel_ports      equ 64
-        ; For storing socket descriptors we we care about
+        ; For storing socket descriptors we care about
         socketarray:            resd max_parallel_ports        
         ; Used in conjunction with socketarray to map socket to port
         portarray:              resw max_parallel_ports        
