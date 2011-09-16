@@ -1078,6 +1078,7 @@ cleanup_sockets:
         ; that can exist in a fdset.
         mov eax, 1023
         lea ecx, [masterfds + masterfdslen]
+
         ; Find dword containing highest numbered file descriptor
         find_highest_loop:
                 cmp [ecx], dword 0
@@ -1085,18 +1086,22 @@ cleanup_sockets:
                 sub eax, 32
                 sub ecx, 4
                 jmp find_highest_loop
+
         ; Loop through remaining bits in fdset
         cleanup_sockets_loop:
                 ; Clear bit to zero and store original bit in CF
                 btr [masterfds], eax
                 ; If bit was set, close the mapped socket
                 jc close_socket
+
                 ; Otherwise go to next socket
                 jmp free_next_socket
+
                 close_socket:
-                        push eax
-                        call sys_close
-                        pop eax
+                push eax
+                call sys_close
+                pop eax
+
         ; Keep looking for sockets to free until counter is negative
         free_next_socket:
         dec eax
