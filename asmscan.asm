@@ -773,43 +773,36 @@ send_tcp_raw:
 ;               Expects: pointer to data, data length in words 
 ;               Returns: checksum 
 cksum:
-        push ebp
-        mov ebp, esp
-        push esi
-
-        ; Address
-        mov esi, [ebp + 8]
-        ; Length
-        mov ecx, [ebp + 12]
-        ; The accumulator
-        xor edx, edx
-        ; For the strange condition that length given was zero
-        cmp ecx, 0
-        jz cksum_done
-        cksum_loop:
-                xor eax, eax
-                ; Load esi to lower 16 bis of eax
-                lodsw
-                add edx, eax
-                dec ecx 
-                jnz cksum_loop
-        ; Take the upper 16 bits of edx and add it to lower 16 bits
-        mov eax, edx
-        and eax, 0xffff
-        shr edx, 16
-        add eax, edx
-        ; Take care of the carry
-        mov edx, eax
-        shr edx, 16
-        add eax, edx
-        ; Take the one's complement
-        not eax
-
-        cksum_done:
-        pop esi
-        mov esp, ebp
-        pop ebp
-        ret
+        push ebx
+		mov ecx, [esp + 12]
+		mov edx, [esp + 8]
+		
+		test ecx, ecx
+		je .return
+		
+		lea ebx, [edx + ecx * 2]
+		xor eax, eax
+		
+.loop:
+		movzx ecx, word [edx]
+		
+		add edx, 2
+		add eax, ecx
+		cmp edx, ebx
+		jne .loop
+		
+		mov edx, eax
+		movzx ebx, ax
+		shr edx, 16
+		add edx, ebx
+		mov eax, edx
+		shr eax, 16
+		add eax, edx
+		not eax
+		
+.return:
+		pop ebx
+		ret
 ; ------------------------------------------------------------------------------
 
 ; ------------------------------------------------------------------------------
@@ -818,23 +811,20 @@ cksum:
 ;               Expects: string address
 ;               Returns: bytes written, -errno on error
 printstr:
-        push ebp         
-        mov ebp, esp      
-        
-        ; Get string length
-        push dword [ebp + 8] 
-        call strlen         
-        add esp, 4         
-        ; Write to standard output
-        push eax               
-        push dword [ebp + 8]  
-        push dword 1         
-        call sys_write        
-        add esp, 12          
-
-        mov esp, ebp          
-        pop ebp              
-        ret                 
+        push ebx
+		mov ebx, [esp + 8]
+		
+		push ebx
+		call strlen
+		
+		mov [esp], eax	; After the call to strlen, we don't reset the stack and thus have space for the args (mov [esp], x is quicker than push x)
+		push ebx
+		push 1
+		call sys_write
+		add esp, 12
+		
+		pop ebx
+		ret
 ; ------------------------------------------------------------------------------
 
 ; ------------------------------------------------------------------------------
@@ -843,22 +833,18 @@ printstr:
 ;               Expects: string address
 ;               Returns: length in eax
 strlen:
-        push ebp     
-        mov ebp, esp
         push edi
-
-        xor eax, eax
-        xor ecx, ecx
-        not ecx
-        mov edi, [ebp + 8]
-        repne scasb
-        not ecx
-        lea eax, [ecx - 1]
-        
-        pop edi
-        mov esp, ebp
-        pop ebp
-        ret
+		
+		mov edi, [esp + 8]
+		xor eax, eax
+		or ecx, -1
+		repnz scasb
+		
+		pop edi
+		mov eax, ecx
+		not eax
+		dec eax
+		ret
 ; ------------------------------------------------------------------------------
 
 ; ------------------------------------------------------------------------------
@@ -962,29 +948,28 @@ parse_octets:
 ;               Expects: string address
 ;               Returns: 32-bit unsigned integer in eax
 strtoul:
-        push ebp
-        mov ebp, esp
-
-        ; Load string address in edx
-        mov edx, [ebp + 8]
-        ; Clear "result" register
-        xor eax, eax
-        strtoul_loop:
-                ; Load ecx with character
-                movzx ecx, byte [edx]
-                inc edx
-                ; Terminate if NUL byte
-                cmp cl, byte 0
-                je strtoul_done
-                ; Multiply current result by 10,
-                ; then add current character - '0'
-                lea eax, [eax + eax * 4]
-                lea eax, [ecx + eax * 2 - '0']
-                jmp strtoul_loop
-        strtoul_done:
-        mov esp, ebp
-        pop ebp
-        ret
+		push ebx
+		mov eax, [esp + 8]
+		
+		movzx ebx, byte [eax]
+		lea edx, [eax + 1]
+		
+		xor eax, eax
+		
+		test bl, bl
+		je .return
+		
+.loop:
+		lea ecx, [eax + eax * 4]
+		inc edx
+		lea eax, [ebx + ecx * 2 - 48]
+		movzx ebx, byte [edx - 1]
+		test bl, bl
+		jne .loop
+		
+.return:
+		pop ebx
+		ret
 ; ------------------------------------------------------------------------------
 
 ; ------------------------------------------------------------------------------
@@ -993,47 +978,36 @@ strtoul:
 ;               Expects: 32-bit unsigned integer, buffer 
 ;               Returns: nothing
 ultostr:
-        push ebp  
-        mov ebp, esp
-        push ebx
         push edi
-        push esi
-
-        ; Push string characters onto stack in reverse order
-        dec esp
-        mov [esp], byte 0
-        ; ecx counts how many characters to write
-        xor ecx, ecx
-        inc ecx
-        mov eax, [ebp + 8]
-        ; This is our divisor
-        mov ebx, 10
-        ; eax: quotient contains the rest of input number
-        ; edx: remainder contains the digit we want to write
-        ultostr_loop:
-                xor edx, edx
-                div ebx
-                add dl, byte '0'
-                dec esp
-                mov [esp], byte dl
-                inc ecx
-                ; Stop if eax is 0
-                cmp eax, 0
-                jne ultostr_loop
-        ; Copy chars on stack to destination buffer
-        ; They will be in order because stack grows down
-        mov esi, esp
-        mov edi, [ebp + 12]
-        repne movsb
-        ; Realign stack pointer
-        mov esp, esi
-
-        pop esi
-        pop edi
-        pop ebx
-        mov esp, ebp
-        pop ebp
-        ret
+		mov ecx, 1
+		push esi
+		mov esi, 10
+		sub esp, 16
+		
+.loop:
+		mov eax, [esp + 28]
+		xor edx, edx
+		inc ecx
+		div esi
+		
+		cmp dword [esp + 28], 0
+		jbe .finish
+		
+		mov [esp + 28], eax
+		jmp .loop
+		
+.finish:
+		mov dl, byte [esp + 28]
+		lea esi, [esp + 15]
+		mov edi, [esp + 32]
+		add dl, 48
+		mov byte [esp + 15], dl
+		rep movsb
+		
+		add esp, 16
+		pop esi
+		pop edi
+		ret
 ; ------------------------------------------------------------------------------
 
 ; ------------------------------------------------------------------------------
